@@ -2,9 +2,9 @@
 
 import re
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
-from .models import VideoSegment
+from .models import VideoSegment, Chapter
 from .utils import TimeParser
 
 
@@ -22,15 +22,17 @@ class ChapterParser:
         """
         self.exclude_prefix = exclude_prefix
     
-    def parse_file(self, filepath: Path) -> List[VideoSegment]:
+    def parse_file(self, filepath: Path) -> Tuple[List[VideoSegment], List[Chapter]]:
         """
-        Parse chapter file and extract segments.
+        Parse chapter file and extract segments and chapters.
         
         Args:
             filepath: Path to chapter file
             
         Returns:
-            List of VideoSegment objects
+            Tuple of (segments, chapters) where:
+            - segments: List of VideoSegment objects to extract
+            - chapters: List of all Chapter objects from the file
             
         Raises:
             FileNotFoundError: If chapter file doesn't exist
@@ -43,6 +45,7 @@ class ChapterParser:
             raise ValueError(f"Path is not a file: {filepath}")
         
         segments = []
+        chapters = []
         current_start = None
         
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -54,27 +57,31 @@ class ChapterParser:
         for i, line in enumerate(lines, 1):
             try:
                 timestamp, title = self._parse_line(line)
+                timestamp_td = TimeParser.parse_timestamp(timestamp)
+                
+                # Store all chapters
+                chapters.append(Chapter(timestamp=timestamp_td, title=title))
+                
+                if title.startswith(self.exclude_prefix):
+                    # End current segment if exists
+                    if current_start is not None:
+                        segments.append(VideoSegment(
+                            start=current_start,
+                            end=timestamp_td
+                        ))
+                        current_start = None
+                else:
+                    # Start new segment if not in one
+                    if current_start is None:
+                        current_start = timestamp_td
             except ValueError as e:
                 raise ValueError(f"Error at line {i}: {e}")
-            
-            if title.startswith(self.exclude_prefix):
-                # End current segment if exists
-                if current_start is not None:
-                    segments.append(VideoSegment(
-                        start=current_start,
-                        end=TimeParser.parse_timestamp(timestamp)
-                    ))
-                    current_start = None
-            else:
-                # Start new segment if not in one
-                if current_start is None:
-                    current_start = TimeParser.parse_timestamp(timestamp)
         
         # Handle unclosed segment
         if current_start is not None:
             segments.append(VideoSegment(start=current_start))
         
-        return segments
+        return segments, chapters
     
     def _parse_line(self, line: str) -> Tuple[str, str]:
         """

@@ -18,10 +18,11 @@ __license__ = "MIT"
 __copyright__ = "Copyright 2024 Your Name"
 
 # Import main components
-from .models import VideoSegment
+from .models import VideoSegment, Chapter
 from .utils import TimeParser
 from .parser import ChapterParser
 from .processor import VideoProcessor
+from .chapter_writer import ChapterWriter
 
 # Public API
 __all__ = [
@@ -37,9 +38,11 @@ __all__ = [
     
     # Classes
     "VideoSegment",
+    "Chapter",
     "TimeParser",
     "ChapterParser",
     "VideoProcessor",
+    "ChapterWriter",
 ]
 
 # Convenience imports for CLI

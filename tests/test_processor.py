@@ -32,6 +32,16 @@ class TestVideoProcessor:
         return VideoProcessor(verbose=False, dry_run=False)
     
     @pytest.fixture
+    def accurate_processor(self, mock_subprocess_run):
+        """Create a VideoProcessor instance with accurate mode."""
+        return VideoProcessor(verbose=False, dry_run=False, accurate=True)
+    
+    @pytest.fixture
+    def reencode_processor(self, mock_subprocess_run):
+        """Create a VideoProcessor instance with reencode mode."""
+        return VideoProcessor(verbose=False, dry_run=False, reencode=True)
+    
+    @pytest.fixture
     def dry_run_processor(self, mock_subprocess_run):
         """Create a VideoProcessor instance in dry-run mode."""
         return VideoProcessor(verbose=False, dry_run=True)
@@ -79,10 +89,12 @@ class TestVideoProcessor:
         args = extract_call[0][0]
         
         assert args[0] == 'ffmpeg'
-        assert '-i' in args
-        assert str(input_file) in args
         assert '-ss' in args
         assert '00:00:10.000' in args
+        assert '-i' in args
+        assert str(input_file) in args
+        assert '-c' in args
+        assert 'copy' in args
         assert '-t' in args
         assert '00:00:20.000' in args  # duration = 30 - 10
         assert str(output_file) in args
@@ -165,10 +177,101 @@ class TestVideoProcessor:
         assert "streams" in info
         assert "format" in info
     
-    def test_get_video_info_error(self, processor, mock_subprocess_run):
-        """Test getting video info with error."""
-        mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, 'ffprobe')
+    def test_accurate_mode_extraction(self, accurate_processor, mock_subprocess_run):
+        """Test extraction in accurate mode."""
+        # Mock video info response
+        mock_subprocess_run.return_value = Mock(
+            returncode=0,
+            stdout='{"streams": [{"codec_type": "video", "codec_name": "h264"}]}',
+            stderr=""
+        )
         
-        info = processor.get_video_info(Path("video.mp4"))
+        input_file = Path("input.mp4")
+        output_file = Path("output.mp4")
+        segment = VideoSegment(
+            start=timedelta(seconds=10),
+            end=timedelta(seconds=30)
+        )
         
-        assert info is None
+        accurate_processor.extract_segment(input_file, output_file, segment)
+        
+        # Check that re-encoding parameters are used
+        extract_call = mock_subprocess_run.call_args_list[-1]
+        args = extract_call[0][0]
+        
+        assert '-c:v' in args
+        assert 'libx264' in args
+        assert '-crf' in args
+    
+    def test_reencode_mode_extraction(self, reencode_processor, mock_subprocess_run):
+        """Test extraction in reencode mode."""
+        # Mock video info response
+        mock_subprocess_run.return_value = Mock(
+            returncode=0,
+            stdout='{"streams": [{"codec_type": "video", "codec_name": "h264"}]}',
+            stderr=""
+        )
+        
+        input_file = Path("input.mp4")
+        output_file = Path("output.mp4")
+        segment = VideoSegment(
+            start=timedelta(seconds=10),
+            end=timedelta(seconds=30)
+        )
+        
+        reencode_processor.extract_segment(input_file, output_file, segment)
+        
+        # Check full re-encoding is used
+        extract_call = mock_subprocess_run.call_args_list[-1]
+        args = extract_call[0][0]
+        
+        assert '-c:v' in args
+        assert 'libx264' in args
+        # Should have -i before -ss for accurate seeking
+        i_index = args.index('-i')
+        ss_index = args.index('-ss')
+        assert i_index < ss_index
+    
+    def test_keyframe_alignment_check(self, processor, mock_subprocess_run):
+        """Test keyframe alignment checking."""
+        # Mock ffprobe response with keyframe data
+        mock_subprocess_run.return_value = Mock(
+            returncode=0,
+            stdout=json.dumps({
+                "packets": [
+                    {"pts_time": "9.8", "flags": "K__"},
+                    {"pts_time": "10.2", "flags": "___"},
+                    {"pts_time": "10.5", "flags": "K__"}
+                ]
+            }),
+            stderr=""
+        )
+        
+        nearest = processor.check_keyframe_alignment(Path("video.mp4"), 10.0)
+        
+        assert nearest == 9.8  # Nearest keyframe to 10.0
+    
+    def test_validate_segments(self, processor, mock_subprocess_run):
+        """Test segment validation."""
+        # Mock keyframe check responses
+        mock_subprocess_run.return_value = Mock(
+            returncode=0,
+            stdout=json.dumps({
+                "packets": [
+                    {"pts_time": "10.5", "flags": "K__"}
+                ]
+            }),
+            stderr=""
+        )
+        
+        segments = [
+            VideoSegment(
+                start=timedelta(seconds=10),
+                end=timedelta(seconds=30)
+            )
+        ]
+        
+        warnings = processor.validate_segments(Path("video.mp4"), segments)
+        
+        assert len(warnings) > 0
+        assert "keyframe" in warnings[0].lower()

@@ -10,6 +10,7 @@ import argparse
 from . import __version__, __description__
 from .parser import ChapterParser
 from .processor import VideoProcessor
+from .chapter_writer import ChapterWriter
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,11 @@ class VideoChapterTrimmer:
         self.parser = ChapterParser()
         self.processor = VideoProcessor(
             verbose=args.verbose, 
-            dry_run=args.dry_run
+            dry_run=args.dry_run,
+            accurate=args.accurate,
+            reencode=args.reencode
         )
+        self.chapter_writer = ChapterWriter()
         
         # Setup paths
         self.chapter_file = Path(args.chapter_file)
@@ -45,6 +49,9 @@ class VideoChapterTrimmer:
             stem = self.input_video.stem
             suffix = self.input_video.suffix
             self.output_video = self.input_video.parent / f"{stem}_edited{suffix}"
+        
+        # Setup chapter output path
+        self.output_chapter = self.output_video.with_suffix('.txt')
     
     def _setup_temp_dir(self):
         """Setup temporary directory."""
@@ -77,7 +84,7 @@ class VideoChapterTrimmer:
             if not self.args.quiet:
                 logger.info(f"Parsing chapter file: {self.chapter_file}")
             
-            segments = self.parser.parse_file(self.chapter_file)
+            segments, chapters = self.parser.parse_file(self.chapter_file)
             
             if not segments:
                 logger.warning("No segments found to extract.")
@@ -89,17 +96,36 @@ class VideoChapterTrimmer:
                     for i, seg in enumerate(segments):
                         logger.debug(f"  Segment {i+1}: {seg}")
             
+            # Validate segments if not in fast mode
+            if self.args.accurate or self.args.reencode:
+                if not self.args.quiet:
+                    logger.info("Validating segment keyframe alignment...")
+                
+                warnings = self.processor.validate_segments(self.input_video, segments)
+                if warnings:
+                    for warning in warnings:
+                        logger.warning(warning)
+                    
+                    if not self.args.accurate and not self.args.reencode:
+                        logger.info("Tip: Use --accurate or --reencode for precise cuts")
+            
             # Check if output already exists
             if self.output_video.exists() and not self.args.dry_run:
                 if not self._confirm_overwrite():
                     logger.info("Operation cancelled.")
                     return 0
             
+            # Check if chapter output already exists
+            if self.output_chapter.exists() and not self.args.dry_run:
+                if not self.args.quiet:
+                    logger.debug(f"Chapter file will be overwritten: {self.output_chapter}")
+            
             # Extract segments
             segment_files = []
             for i, segment in enumerate(segments):
                 if not self.args.quiet:
-                    logger.info(f"Extracting segment {i+1}/{len(segments)}")
+                    mode = "re-encoding" if self.args.reencode else "extracting"
+                    logger.info(f"{mode.capitalize()} segment {i+1}/{len(segments)}")
                 
                 output_file = self.temp_dir / f"segment_{i:03d}.mp4"
                 self.processor.extract_segment(
@@ -114,6 +140,29 @@ class VideoChapterTrimmer:
                 logger.info("Merging segments...")
             
             self.processor.merge_segments(segment_files, self.output_video)
+            
+            # Generate and write new chapter file
+            if not self.args.no_chapters:
+                if not self.args.quiet:
+                    logger.info("Generating chapter file for edited video...")
+                
+                edited_chapters = self.chapter_writer.generate_edited_chapters(
+                    chapters, segments
+                )
+                
+                if edited_chapters:
+                    if not self.args.dry_run:
+                        self.chapter_writer.write_chapter_file(
+                            edited_chapters, self.output_chapter
+                        )
+                    
+                    if not self.args.quiet:
+                        logger.info(f"Chapter file saved to: {self.output_chapter}")
+                        if self.args.verbose:
+                            logger.debug(f"Generated {len(edited_chapters)} chapters")
+                else:
+                    if not self.args.quiet:
+                        logger.warning("No chapters to write for edited video")
             
             if not self.args.quiet:
                 logger.info(f"Success! Output saved to: {self.output_video}")
@@ -183,6 +232,8 @@ Examples:
   %(prog)s chapters.txt video.mp4 -o edited.mp4
   %(prog)s chapters.txt video.mp4 --dry-run
   %(prog)s chapters.txt video.mp4 -v --keep-temp
+  %(prog)s chapters.txt video.mp4 --accurate  # More precise cuts
+  %(prog)s chapters.txt video.mp4 --reencode  # Most accurate (slow)
 
 Chapter file format:
   0:00:05.151 Opening
@@ -223,6 +274,18 @@ Lines starting with '--' are excluded from the output.
     parser.add_argument('--dry-run',
                        action='store_true',
                        help='Show what would be done without executing')
+    
+    parser.add_argument('--accurate',
+                       action='store_true',
+                       help='Use accurate seeking (slower but more precise)')
+    
+    parser.add_argument('--reencode',
+                       action='store_true',
+                       help='Force re-encoding for precise cuts (slowest but most accurate)')
+    
+    parser.add_argument('--no-chapters',
+                       action='store_true',
+                       help='Do not generate chapter file for edited video')
     
     # Version
     parser.add_argument('--version',

@@ -56,6 +56,21 @@ class TestTimeParser:
             result = TimeParser.format_for_ffmpeg(td)
             assert result == expected
     
+    def test_format_for_chapter(self):
+        """Test formatting timedelta for chapter file."""
+        test_cases = [
+            (timedelta(seconds=5, milliseconds=151), "0:00:05.151"),
+            (timedelta(minutes=5, seconds=30, milliseconds=151), "0:05:30.151"),
+            (timedelta(hours=1, minutes=30, seconds=45, milliseconds=500), "1:30:45.500"),
+            (timedelta(hours=12, minutes=59, seconds=59, milliseconds=999), "12:59:59.999"),
+            (timedelta(), "0:00:00.000"),
+            (timedelta(days=1, hours=2, minutes=30), "26:30:00.000"),  # > 24 hours
+        ]
+        
+        for td, expected in test_cases:
+            result = TimeParser.format_for_chapter(td)
+            assert result == expected
+    
     def test_parse_and_format_roundtrip(self):
         """Test that parse and format are inverse operations."""
         time_strings = [

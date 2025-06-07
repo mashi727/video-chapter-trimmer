@@ -6,7 +6,7 @@ from datetime import timedelta
 import tempfile
 
 from video_chapter_trimmer.parser import ChapterParser
-from video_chapter_trimmer.models import VideoSegment
+from video_chapter_trimmer.models import VideoSegment, Chapter
 
 
 class TestChapterParser:
@@ -36,9 +36,10 @@ class TestChapterParser:
         """
         temp_chapter_file.write_text(content.strip())
         
-        segments = parser.parse_file(temp_chapter_file)
+        segments, chapters = parser.parse_file(temp_chapter_file)
         
         assert len(segments) == 3
+        assert len(chapters) == 5  # All chapters including CMs
         
         # First segment: Opening
         assert segments[0].start == timedelta(seconds=5, milliseconds=151)
@@ -62,9 +63,10 @@ class TestChapterParser:
         """
         temp_chapter_file.write_text(content.strip())
         
-        segments = parser.parse_file(temp_chapter_file)
+        segments, chapters = parser.parse_file(temp_chapter_file)
         
         assert len(segments) == 2
+        assert len(chapters) == 4
         assert segments[0].start == timedelta(seconds=30)
         assert segments[1].start == timedelta(minutes=5, seconds=30)
     
@@ -77,9 +79,10 @@ class TestChapterParser:
         """
         temp_chapter_file.write_text(content.strip())
         
-        segments = parser.parse_file(temp_chapter_file)
+        segments, chapters = parser.parse_file(temp_chapter_file)
         
         assert len(segments) == 1
+        assert len(chapters) == 3
         assert segments[0].start == timedelta()
         assert segments[0].end is None
     
@@ -92,9 +95,10 @@ class TestChapterParser:
         """
         temp_chapter_file.write_text(content.strip())
         
-        segments = parser.parse_file(temp_chapter_file)
+        segments, chapters = parser.parse_file(temp_chapter_file)
         
         assert len(segments) == 0
+        assert len(chapters) == 3
     
     def test_parse_empty_file(self, parser, temp_chapter_file):
         """Test parsing empty file."""
@@ -135,7 +139,7 @@ This is not a valid line
         """
         temp_chapter_file.write_text(content.strip())
         
-        segments = parser.parse_file(temp_chapter_file)
+        segments, chapters = parser.parse_file(temp_chapter_file)
         
         assert len(segments) == 3
         assert segments[0].end == timedelta(minutes=1)
