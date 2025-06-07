@@ -2,11 +2,13 @@
 
 import json
 import logging
+import re
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from .models import VideoSegment
+from .models import VideoSegment, Chapter
 from .utils import TimeParser
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,7 @@ class VideoProcessor:
     
     def __init__(self, verbose: bool = False, dry_run: bool = False, 
                  accurate: bool = False, reencode: bool = False,
-                 gpu: str = None):
+                 gpu: str = None, split_safe: bool = False):
         """
         Initialize VideoProcessor.
         
@@ -27,12 +29,14 @@ class VideoProcessor:
             accurate: Use accurate seeking (may require re-encoding)
             reencode: Force re-encoding for precise cuts
             gpu: GPU acceleration type ('auto', 'videotoolbox', 'nvenc', 'qsv', 'amf')
+            split_safe: Optimize encoding for future splitting
         """
         self.verbose = verbose
         self.dry_run = dry_run
         self.accurate = accurate
         self.reencode = reencode
         self.gpu = gpu
+        self.split_safe = split_safe
         self._check_ffmpeg()
         
         # Detect and configure GPU encoder
@@ -193,7 +197,8 @@ class VideoProcessor:
     def extract_segment(self, 
                        input_file: Path, 
                        output_file: Path, 
-                       segment: VideoSegment) -> None:
+                       segment: VideoSegment,
+                       chapters: List['Chapter'] = None) -> None:
         """
         Extract a segment from video file.
         
@@ -201,6 +206,7 @@ class VideoProcessor:
             input_file: Input video file path
             output_file: Output segment file path
             segment: VideoSegment to extract
+            chapters: Optional chapters for keyframe insertion
             
         Raises:
             subprocess.CalledProcessError: If ffmpeg fails
@@ -210,7 +216,7 @@ class VideoProcessor:
         if self.accurate or self.reencode:
             # Accurate seeking with re-encoding if necessary
             cmd = self._build_accurate_extract_command(
-                input_file, output_file, segment, start_time
+                input_file, output_file, segment, start_time, chapters
             )
         else:
             # Fast seeking with stream copy
@@ -240,10 +246,144 @@ class VideoProcessor:
         if not self.verbose:
             cmd.extend(['-loglevel', 'error'])
         
+    def split_video_by_chapters(self, 
+                               input_file: Path,
+                               chapters: List['Chapter'],
+                               output_dir: Path,
+                               name_pattern: str = "{num:02d}_{title}") -> List[Path]:
+        """
+        Split video into multiple files based on chapters.
+        
+        Args:
+            input_file: Input video file
+            chapters: List of chapters to split by
+            output_dir: Directory for output files
+            name_pattern: Pattern for output filenames (default: "01_チャプター名")
+            
+        Returns:
+            List of output file paths
+        """
+        output_files = []
+        suffix = input_file.suffix
+        
+        # Counter for non-excluded chapters
+        chapter_num = 0
+        
+        for i, chapter in enumerate(chapters):
+            # Skip excluded chapters
+            if chapter.title.startswith("--"):
+                continue
+            
+            chapter_num += 1
+            
+            # Determine start and end times
+            start_time = chapter.timestamp
+            
+            # Find next non-excluded chapter for end time
+            end_time = None
+            for j in range(i + 1, len(chapters)):
+                if not chapters[j].title.startswith("--"):
+                    end_time = chapters[j].timestamp
+                    break
+            
+            # Create output filename
+            safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter.title)[:50]
+            output_name = name_pattern.format(
+                num=chapter_num,
+                title=safe_title
+            ) + suffix
+            output_path = output_dir / output_name
+            
+            # Build split command
+            cmd = self._build_split_command(
+                input_file, output_path, start_time, end_time
+            )
+            
+            if not self.dry_run:
+                logger.info(f"Extracting chapter {chapter_num}: {chapter.title}")
+            
+            self._run_command(cmd, f"Extracting chapter {chapter_num}")
+            output_files.append(output_path)
+        
+        return output_files
+    
+    def _build_split_command(self, 
+                           input_file: Path,
+                           output_file: Path,
+                           start_time: timedelta,
+                           end_time: Optional[timedelta] = None) -> List[str]:
+        """
+        Build command for splitting video at specific times.
+        
+        Args:
+            input_file: Input video file
+            output_file: Output video file
+            start_time: Start timestamp
+            end_time: End timestamp (optional)
+            
+        Returns:
+            ffmpeg command list
+        """
+        cmd = ['ffmpeg']
+        
+        # Use fast seek for splitting by default
+        start_str = TimeParser.format_for_ffmpeg(start_time)
+        cmd.extend([
+            '-ss', start_str,
+            '-i', str(input_file)
+        ])
+        
+        # Add duration if end time is specified
+        if end_time:
+            duration = end_time - start_time
+            cmd.extend(['-t', TimeParser.format_for_ffmpeg(duration)])
+        
+        # Use stream copy for fast splitting
+        cmd.extend([
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            '-movflags', '+faststart'
+        ])
+        
+        # For split-safe mode, use re-encoding at chapter boundaries
+        if self.split_safe:
+            # Re-encode only the first few seconds for clean cuts
+            cmd = ['ffmpeg', '-i', str(input_file)]
+            
+            # Accurate seek for clean cuts
+            cmd.extend(['-ss', start_str])
+            
+            if end_time:
+                duration = end_time - start_time
+                cmd.extend(['-t', TimeParser.format_for_ffmpeg(duration)])
+            
+            # Use appropriate encoder
+            if self.gpu_encoder:
+                cmd.extend(['-c:v', self.gpu_encoder['encoder']])
+                cmd.extend(self.gpu_encoder['params'])
+            else:
+                cmd.extend([
+                    '-c:v', 'libx264',
+                    '-crf', '18',
+                    '-preset', 'fast'
+                ])
+            
+            cmd.extend([
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart'
+            ])
+        
+        cmd.extend([str(output_file), '-y'])
+        
+        if not self.verbose:
+            cmd.extend(['-loglevel', 'error'])
+        
         return cmd
     
     def _build_accurate_extract_command(self, input_file: Path, output_file: Path,
-                                       segment: VideoSegment, start_time: str) -> List[str]:
+                                       segment: VideoSegment, start_time: str,
+                                       chapters: List['Chapter'] = None) -> List[str]:
         """Build command for accurate extraction with optional re-encoding."""
         # Get video info to determine encoding parameters
         video_info = self.get_video_info(input_file)
@@ -258,6 +398,10 @@ class VideoProcessor:
                 '-ss', start_time,  # Seek after input (accurate)
             ])
             cmd.extend(encoding_params)
+            
+            # Add split-safe options if requested
+            if self.split_safe:
+                cmd = self._add_split_safe_params(cmd, segment, chapters)
         else:
             # Accurate seeking with minimal re-encoding
             # Use input seeking for speed, then accurate trimming
@@ -280,6 +424,10 @@ class VideoProcessor:
                 ])
             
             cmd.extend(['-c:a', 'copy'])  # Keep audio as-is if possible
+            
+            # Add split-safe options if requested
+            if self.split_safe:
+                cmd = self._add_split_safe_params(cmd, segment, chapters)
         
         if segment.duration:
             cmd.extend(['-t', TimeParser.format_for_ffmpeg(segment.duration)])
@@ -561,6 +709,73 @@ class VideoProcessor:
                         )
         
         return warnings
+    
+    def _add_split_safe_params(self, cmd: List[str], segment: VideoSegment,
+                              chapters: List['Chapter'] = None) -> List[str]:
+        """
+        Add parameters for split-safe encoding.
+        
+        Args:
+            cmd: Current command list
+            segment: Video segment being processed
+            chapters: Optional chapters for keyframe insertion
+            
+        Returns:
+            Updated command list
+        """
+        # Find codec position in command
+        codec_idx = None
+        for i, arg in enumerate(cmd):
+            if arg == '-c:v' and i + 1 < len(cmd):
+                codec_idx = i + 1
+                break
+        
+        if not codec_idx:
+            return cmd
+        
+        codec = cmd[codec_idx]
+        
+        # Add keyframe intervals based on codec
+        if 'libx264' in codec:
+            # x264 specific settings
+            cmd.extend([
+                '-g', '60',  # GOP size (2 seconds at 30fps)
+                '-keyint_min', '30',  # Minimum GOP size
+                '-sc_threshold', '0',  # Disable scene cut detection
+            ])
+        elif 'videotoolbox' in codec:
+            # VideoToolbox settings
+            cmd.extend(['-g', '60'])
+        elif 'nvenc' in codec:
+            # NVENC settings
+            cmd.extend(['-g', '60', '-strict_gop', '1'])
+        elif 'qsv' in codec or 'amf' in codec:
+            # Intel QSV and AMD AMF
+            cmd.extend(['-g', '60'])
+        
+        # Add forced keyframes at chapter positions if provided
+        if chapters:
+            chapter_times = []
+            for chapter in chapters:
+                # Calculate relative time within segment
+                if segment.start <= chapter.timestamp:
+                    if segment.end is None or chapter.timestamp < segment.end:
+                        relative_time = (chapter.timestamp - segment.start).total_seconds()
+                        chapter_times.append(str(relative_time))
+            
+            if chapter_times:
+                # Insert before output file in command
+                output_idx = None
+                for i, arg in enumerate(cmd):
+                    if arg.endswith('.mp4'):
+                        output_idx = i
+                        break
+                
+                if output_idx:
+                    cmd.insert(output_idx, '-force_key_frames')
+                    cmd.insert(output_idx + 1, ','.join(chapter_times))
+        
+        return cmd
     
     def _run_command(self, cmd: List[str], description: str = "") -> None:
         """

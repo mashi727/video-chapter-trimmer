@@ -4,10 +4,13 @@ import sys
 import logging
 import shutil
 import tempfile
+from datetime import timedelta
 from pathlib import Path
+from typing import List
 import argparse
 
 from . import __version__, __description__
+from .models import Chapter
 from .parser import ChapterParser
 from .processor import VideoProcessor
 from .chapter_writer import ChapterWriter
@@ -32,7 +35,8 @@ class VideoChapterTrimmer:
             dry_run=args.dry_run,
             accurate=args.accurate,
             reencode=args.reencode,
-            gpu=args.gpu
+            gpu=args.gpu,
+            split_safe=args.split_safe
         )
         self.chapter_writer = ChapterWriter()
         
@@ -87,6 +91,10 @@ class VideoChapterTrimmer:
             
             segments, chapters = self.parser.parse_file(self.chapter_file)
             
+            # Split mode - split video by chapters
+            if self.args.split:
+                return self._run_split_mode(chapters)
+            
             if not segments:
                 logger.warning("No segments found to extract.")
                 return 1
@@ -129,10 +137,22 @@ class VideoChapterTrimmer:
                     logger.info(f"{mode.capitalize()} segment {i+1}/{len(segments)}")
                 
                 output_file = self.temp_dir / f"segment_{i:03d}.mp4"
+                
+                # Pass chapters if split-safe mode is enabled
+                segment_chapters = None
+                if self.args.split_safe:
+                    # Filter chapters that belong to this segment
+                    segment_chapters = [
+                        ch for ch in chapters
+                        if segment.start <= ch.timestamp and 
+                           (segment.end is None or ch.timestamp < segment.end)
+                    ]
+                
                 self.processor.extract_segment(
                     self.input_video, 
                     output_file, 
-                    segment
+                    segment,
+                    segment_chapters
                 )
                 segment_files.append(output_file)
             
@@ -184,6 +204,62 @@ class VideoChapterTrimmer:
             return 1
         finally:
             self._cleanup()
+    
+    def _run_split_mode(self, chapters: List['Chapter']) -> int:
+        """
+        Run in split mode - split video by chapters.
+        
+        Args:
+            chapters: List of chapters to split by
+            
+        Returns:
+            Exit code
+        """
+        try:
+            # Filter out excluded chapters
+            valid_chapters = [ch for ch in chapters if not ch.title.startswith("--")]
+            
+            if not valid_chapters:
+                logger.warning("No chapters found to split (all chapters are excluded).")
+                return 1
+            
+            if not self.args.quiet:
+                logger.info(f"Found {len(valid_chapters)} chapters to extract")
+            
+            # Create output directory
+            if self.args.output:
+                output_dir = Path(self.args.output)
+            else:
+                # Use video filename as directory name
+                output_dir = self.input_video.parent / self.input_video.stem
+            
+            if not self.args.dry_run:
+                output_dir.mkdir(exist_ok=True)
+            
+            if not self.args.quiet:
+                logger.info(f"Output directory: {output_dir}")
+            
+            # Split video by chapters
+            output_files = self.processor.split_video_by_chapters(
+                self.input_video,
+                chapters,
+                output_dir,
+                self.args.split_pattern or "{num:02d}_{title}"
+            )
+            
+            if not self.args.quiet and not self.args.dry_run:
+                logger.info(f"Successfully created {len(output_files)} chapter files")
+                if self.args.verbose:
+                    for file in output_files:
+                        logger.debug(f"  - {file.name}")
+            
+            return 0
+            
+        except Exception as e:
+            logger.error(f"Error during split: {e}")
+            if self.args.verbose:
+                logger.exception("Detailed error information:")
+            return 1
     
     def _confirm_overwrite(self) -> bool:
         """Ask user for confirmation to overwrite existing file."""
@@ -238,6 +314,8 @@ Examples:
   %(prog)s chapters.txt video.mp4 --gpu auto  # Auto-detect GPU
   %(prog)s chapters.txt video.mp4 --gpu videotoolbox  # macOS M1/M2/M3
   %(prog)s chapters.txt video.mp4 --reencode --gpu nvenc  # NVIDIA GPU
+  %(prog)s chapters.txt video.mp4 --split  # Split into chapter files
+  %(prog)s chapters.txt video.mp4 --split -o my_chapters  # Custom output dir
 
 Chapter file format:
   0:00:05.151 Opening
@@ -258,7 +336,7 @@ Lines starting with '--' are excluded from the output.
     
     # Optional arguments
     parser.add_argument('-o', '--output',
-                       help='Output filename (default: <input>_edited.<ext>)')
+                       help='Output filename (default: <input>_edited.<ext>) or directory for --split mode')
     parser.add_argument('-t', '--temp-dir',
                        help='Temporary directory (default: auto-generated)')
     parser.add_argument('-k', '--keep-temp',
@@ -295,6 +373,18 @@ Lines starting with '--' are excluded from the output.
     parser.add_argument('--gpu',
                        choices=['auto', 'videotoolbox', 'nvenc', 'qsv', 'amf'],
                        help='Use GPU acceleration for encoding (auto-detect or specify)')
+    
+    parser.add_argument('--split-safe',
+                       action='store_true',
+                       help='Optimize encoding for future splitting (adds keyframes)')
+    
+    # Split mode
+    parser.add_argument('--split',
+                       action='store_true',
+                       help='Split video into separate files by chapters')
+    
+    parser.add_argument('--split-pattern',
+                       help='Pattern for split filenames (default: "{num:02d}_{title}")')
     
     # Version
     parser.add_argument('--version',

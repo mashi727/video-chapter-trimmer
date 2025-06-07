@@ -11,6 +11,7 @@
 - 📺 チャプターファイルから`--`で始まるセグメント（CM等）を自動除外
 - ⚡ ストリームコピーによる高速処理（再エンコードなし）
 - 🎯 キーフレームを考慮した正確なカット（--accurate/--reencodeオプション）
+- ✂️ チャプターごとに動画を分割する機能（--splitオプション）
 - 🚀 GPUアクセラレーション対応（M1/M2/M3 Mac、NVIDIA、AMD、Intel）
 - 📝 編集後の動画用に調整されたチャプターファイルを自動生成
 - 📱 iOS互換性のための最適化
@@ -111,6 +112,21 @@ video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu qsv
 
 # AMD GPU用
 video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu amf
+
+# 将来の分割に最適化（キーフレーム挿入）
+video-chapter-trimmer chapters.txt input.mp4 --reencode --split-safe
+
+# チャプターごとに分割
+video-chapter-trimmer chapters.txt input.mp4 --split
+
+# 分割ファイルを特定のディレクトリに出力
+video-chapter-trimmer chapters.txt input.mp4 --split -o chapters_output
+
+# カスタムファイル名パターンで分割
+video-chapter-trimmer chapters.txt input.mp4 --split --split-pattern "{num:03d}_{title}"
+
+# 分割時に再エンコード（より正確なカット）
+video-chapter-trimmer chapters.txt input.mp4 --split --split-safe
 ```
 
 ### GPU アクセラレーション

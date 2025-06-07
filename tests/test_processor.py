@@ -57,7 +57,74 @@
         args = extract_call[0][0]
         
         assert '-c:v' in args
-        assert 'h264_videotoolbox' in args"""Tests for video processor."""
+    def test_split_safe_mode(self, mock_subprocess_run):
+        """Test split-safe encoding mode."""
+        from video_chapter_trimmer.models import Chapter
+        
+        mock_subprocess_run.return_value = Mock(
+            returncode=0,
+            stdout='{"streams": [{"codec_type": "video", "codec_name": "h264"}]}',
+            stderr=""
+        )
+        
+        processor = VideoProcessor(reencode=True, split_safe=True)
+        
+        segment = VideoSegment(
+            start=timedelta(seconds=0),
+            end=timedelta(seconds=120)
+        )
+        
+        chapters = [
+            Chapter(timedelta(seconds=30), "Chapter 1"),
+            Chapter(timedelta(seconds=60), "Chapter 2"),
+            Chapter(timedelta(seconds=90), "Chapter 3"),
+        ]
+        
+        processor.extract_segment(
+            Path("input.mp4"),
+            Path("output.mp4"),
+            segment,
+            chapters
+        )
+        
+        # Check that keyframe parameters are added
+        extract_call = mock_subprocess_run.call_args_list[-1]
+        args = extract_call[0][0]
+        
+        assert '-g' in args
+        assert '-force_key_frames' in args
+    
+    def test_split_video_by_chapters(self, processor, mock_subprocess_run):
+        """Test splitting video by chapters."""
+        from video_chapter_trimmer.models import Chapter
+        import tempfile
+        
+        chapters = [
+            Chapter(timedelta(seconds=0), "Opening"),
+            Chapter(timedelta(seconds=60), "--CM"),
+            Chapter(timedelta(seconds=90), "Main Content"),
+            Chapter(timedelta(seconds=180), "Ending"),
+        ]
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            input_file = Path("input.mp4")
+            
+            output_files = processor.split_video_by_chapters(
+                input_file, chapters, output_dir
+            )
+            
+            # Should create 3 files (skipping --CM)
+            assert len(output_files) == 3
+            
+            # Check ffmpeg was called 3 times for extraction
+            # Plus initial version check
+            assert mock_subprocess_run.call_count == 4
+            
+            # Verify output filenames
+            assert "01_Opening" in str(output_files[0])
+            assert "02_Main Content" in str(output_files[1])
+            assert "03_Ending" in str(output_files[2])"""Tests for video processor."""
 
 import pytest
 from pathlib import Path
