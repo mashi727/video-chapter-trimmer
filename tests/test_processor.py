@@ -1,4 +1,63 @@
-"""Tests for video processor."""
+@pytest.fixture
+    def reencode_processor(self, mock_subprocess_run):
+        """Create a VideoProcessor instance with reencode mode."""
+        return VideoProcessor(verbose=False, dry_run=False, reencode=True)
+    
+    def test_gpu_detection(self, mock_subprocess_run):
+        """Test GPU encoder detection."""
+        # Mock successful GPU test
+        mock_subprocess_run.return_value = Mock(returncode=0)
+        
+        processor = VideoProcessor(gpu='auto')
+        
+        # Should have detected a GPU encoder
+        assert processor.gpu_encoder is not None
+    
+    def test_gpu_encoder_selection(self, mock_subprocess_run):
+        """Test specific GPU encoder selection."""
+        mock_subprocess_run.return_value = Mock(returncode=0)
+        
+        processor = VideoProcessor(gpu='videotoolbox')
+        
+        assert processor.gpu_encoder is not None
+        assert processor.gpu_encoder['encoder'] == 'h264_videotoolbox'
+    
+    def test_gpu_encoder_fallback(self, mock_subprocess_run):
+        """Test GPU encoder fallback when not available."""
+        # Mock failed GPU test
+        mock_subprocess_run.return_value = Mock(returncode=1)
+        
+        processor = VideoProcessor(gpu='nvenc')
+        
+        # Should fall back to CPU
+        assert processor.gpu_encoder is None
+    
+    def test_gpu_encoding_in_accurate_mode(self, gpu_processor, mock_subprocess_run):
+        """Test GPU encoding in accurate mode."""
+        # Mock video info response
+        mock_subprocess_run.return_value = Mock(
+            returncode=0,
+            stdout='{"streams": [{"codec_type": "video", "codec_name": "h264"}]}',
+            stderr=""
+        )
+        
+        gpu_processor.accurate = True
+        
+        input_file = Path("input.mp4")
+        output_file = Path("output.mp4")
+        segment = VideoSegment(
+            start=timedelta(seconds=10),
+            end=timedelta(seconds=30)
+        )
+        
+        gpu_processor.extract_segment(input_file, output_file, segment)
+        
+        # Check that GPU encoder is used
+        extract_call = mock_subprocess_run.call_args_list[-1]
+        args = extract_call[0][0]
+        
+        assert '-c:v' in args
+        assert 'h264_videotoolbox' in args"""Tests for video processor."""
 
 import pytest
 from pathlib import Path
@@ -37,9 +96,11 @@ class TestVideoProcessor:
         return VideoProcessor(verbose=False, dry_run=False, accurate=True)
     
     @pytest.fixture
-    def reencode_processor(self, mock_subprocess_run):
-        """Create a VideoProcessor instance with reencode mode."""
-        return VideoProcessor(verbose=False, dry_run=False, reencode=True)
+    def gpu_processor(self, mock_subprocess_run):
+        """Create a VideoProcessor instance with GPU support."""
+        # Mock successful GPU test
+        mock_subprocess_run.return_value = Mock(returncode=0)
+        return VideoProcessor(verbose=False, dry_run=False, gpu='videotoolbox')
     
     @pytest.fixture
     def dry_run_processor(self, mock_subprocess_run):

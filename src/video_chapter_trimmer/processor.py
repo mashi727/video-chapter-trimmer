@@ -16,7 +16,8 @@ class VideoProcessor:
     """Handles video processing operations using ffmpeg."""
     
     def __init__(self, verbose: bool = False, dry_run: bool = False, 
-                 accurate: bool = False, reencode: bool = False):
+                 accurate: bool = False, reencode: bool = False,
+                 gpu: str = None):
         """
         Initialize VideoProcessor.
         
@@ -25,12 +26,19 @@ class VideoProcessor:
             dry_run: Show commands without executing
             accurate: Use accurate seeking (may require re-encoding)
             reencode: Force re-encoding for precise cuts
+            gpu: GPU acceleration type ('auto', 'videotoolbox', 'nvenc', 'qsv', 'amf')
         """
         self.verbose = verbose
         self.dry_run = dry_run
         self.accurate = accurate
         self.reencode = reencode
+        self.gpu = gpu
         self._check_ffmpeg()
+        
+        # Detect and configure GPU encoder
+        self.gpu_encoder = None
+        if gpu:
+            self._configure_gpu_encoder()
     
     def _check_ffmpeg(self):
         """Check if ffmpeg is available."""
@@ -57,6 +65,130 @@ class VideoProcessor:
                 "ffmpeg not found. Please install ffmpeg and ensure it's in your PATH.\n"
                 "Installation instructions: https://ffmpeg.org/download.html"
             )
+    
+    def _configure_gpu_encoder(self):
+        """Configure GPU encoder based on platform and availability."""
+        if self.gpu == 'auto':
+            # Auto-detect available GPU encoder
+            self.gpu_encoder = self._detect_gpu_encoder()
+            if self.gpu_encoder:
+                logger.info(f"Auto-detected GPU encoder: {self.gpu_encoder['name']}")
+            else:
+                logger.warning("No GPU encoder detected, falling back to CPU encoding")
+        else:
+            # Use specified GPU encoder
+            encoder_configs = {
+                'videotoolbox': {
+                    'name': 'VideoToolbox (macOS)',
+                    'encoder': 'h264_videotoolbox',
+                    'params': ['-profile:v', 'high', '-level', '4.2']
+                },
+                'nvenc': {
+                    'name': 'NVIDIA NVENC',
+                    'encoder': 'h264_nvenc',
+                    'params': ['-preset', 'p4', '-tune', 'hq', '-profile:v', 'high']
+                },
+                'qsv': {
+                    'name': 'Intel Quick Sync',
+                    'encoder': 'h264_qsv',
+                    'params': ['-preset', 'medium', '-profile:v', 'high']
+                },
+                'amf': {
+                    'name': 'AMD AMF',
+                    'encoder': 'h264_amf',
+                    'params': ['-quality', 'balanced', '-profile:v', 'high']
+                }
+            }
+            
+            if self.gpu in encoder_configs:
+                encoder_config = encoder_configs[self.gpu]
+                if self._test_encoder(encoder_config['encoder']):
+                    self.gpu_encoder = encoder_config
+                    logger.info(f"Using GPU encoder: {encoder_config['name']}")
+                else:
+                    logger.warning(f"{encoder_config['name']} not available, falling back to CPU encoding")
+            else:
+                logger.warning(f"Unknown GPU encoder: {self.gpu}")
+    
+    def _detect_gpu_encoder(self) -> Optional[Dict[str, Any]]:
+        """Auto-detect available GPU encoder."""
+        import platform
+        
+        # Platform-specific detection order
+        if platform.system() == 'Darwin':  # macOS
+            # Try VideoToolbox first on macOS
+            encoders = [
+                {
+                    'name': 'VideoToolbox (macOS)',
+                    'encoder': 'h264_videotoolbox',
+                    'params': ['-profile:v', 'high', '-level', '4.2']
+                }
+            ]
+        elif platform.system() == 'Windows':
+            # Try NVIDIA, then AMD, then Intel on Windows
+            encoders = [
+                {
+                    'name': 'NVIDIA NVENC',
+                    'encoder': 'h264_nvenc',
+                    'params': ['-preset', 'p4', '-tune', 'hq', '-profile:v', 'high']
+                },
+                {
+                    'name': 'AMD AMF',
+                    'encoder': 'h264_amf',
+                    'params': ['-quality', 'balanced', '-profile:v', 'high']
+                },
+                {
+                    'name': 'Intel Quick Sync',
+                    'encoder': 'h264_qsv',
+                    'params': ['-preset', 'medium', '-profile:v', 'high']
+                }
+            ]
+        else:  # Linux
+            # Try NVIDIA, then Intel on Linux
+            encoders = [
+                {
+                    'name': 'NVIDIA NVENC',
+                    'encoder': 'h264_nvenc',
+                    'params': ['-preset', 'p4', '-tune', 'hq', '-profile:v', 'high']
+                },
+                {
+                    'name': 'Intel Quick Sync',
+                    'encoder': 'h264_qsv',
+                    'params': ['-preset', 'medium', '-profile:v', 'high']
+                }
+            ]
+        
+        # Test each encoder
+        for encoder in encoders:
+            if self._test_encoder(encoder['encoder']):
+                return encoder
+        
+        return None
+    
+    def _test_encoder(self, encoder: str) -> bool:
+        """Test if a specific encoder is available."""
+        if self.dry_run:
+            return True
+            
+        try:
+            cmd = [
+                'ffmpeg',
+                '-f', 'lavfi',
+                '-i', 'color=c=black:s=320x240:d=1',
+                '-c:v', encoder,
+                '-f', 'null',
+                '-'
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True
+            )
+            
+            return result.returncode == 0
+        except Exception:
+            return False
     
     def extract_segment(self, 
                        input_file: Path, 
@@ -134,11 +266,20 @@ class VideoProcessor:
                 '-ss', str(seek_before),  # Rough seek before input
                 '-i', str(input_file),
                 '-ss', str(segment.start.total_seconds() - seek_before),  # Accurate seek after input
-                '-c:v', 'libx264',  # Re-encode video for accuracy
-                '-crf', '18',  # High quality
-                '-preset', 'fast',
-                '-c:a', 'copy',  # Keep audio as-is if possible
             ])
+            
+            # Use GPU encoder if available
+            if self.gpu_encoder:
+                cmd.extend(['-c:v', self.gpu_encoder['encoder']])
+                cmd.extend(self.gpu_encoder['params'])
+            else:
+                cmd.extend([
+                    '-c:v', 'libx264',  # Re-encode video for accuracy
+                    '-crf', '18',  # High quality
+                    '-preset', 'fast',
+                ])
+            
+            cmd.extend(['-c:a', 'copy'])  # Keep audio as-is if possible
         
         if segment.duration:
             cmd.extend(['-t', TimeParser.format_for_ffmpeg(segment.duration)])
@@ -166,50 +307,72 @@ class VideoProcessor:
         """
         params = []
         
-        if not video_info:
-            # Default high-quality encoding
-            return [
-                '-c:v', 'libx264',
-                '-crf', '18',
-                '-preset', 'medium',
-                '-c:a', 'aac',
-                '-b:a', '192k'
-            ]
-        
-        # Analyze source video
-        video_stream = None
-        audio_stream = None
-        
-        for stream in video_info.get('streams', []):
-            if stream['codec_type'] == 'video' and not video_stream:
-                video_stream = stream
-            elif stream['codec_type'] == 'audio' and not audio_stream:
-                audio_stream = stream
-        
-        # Video encoding parameters
-        if video_stream:
-            # Use same resolution and framerate as source
-            params.extend(['-c:v', 'libx264'])
+        # If GPU encoder is available, use it
+        if self.gpu_encoder:
+            params.extend(['-c:v', self.gpu_encoder['encoder']])
+            params.extend(self.gpu_encoder['params'])
             
-            # Quality based on source bitrate
-            if 'bit_rate' in video_stream:
-                source_bitrate = int(video_stream['bit_rate'])
-                if source_bitrate > 10_000_000:  # >10 Mbps
-                    params.extend(['-crf', '17'])
-                elif source_bitrate > 5_000_000:  # >5 Mbps
-                    params.extend(['-crf', '18'])
+            # Add bitrate control for GPU encoders
+            if video_info:
+                video_stream = next(
+                    (s for s in video_info.get('streams', []) 
+                     if s['codec_type'] == 'video'), 
+                    None
+                )
+                if video_stream and 'bit_rate' in video_stream:
+                    source_bitrate = int(video_stream['bit_rate'])
+                    # Use similar bitrate as source
+                    target_bitrate = min(source_bitrate, 20_000_000)  # Cap at 20 Mbps
+                    params.extend(['-b:v', str(target_bitrate)])
                 else:
-                    params.extend(['-crf', '20'])
-            else:
-                params.extend(['-crf', '18'])  # Default high quality
+                    params.extend(['-b:v', '5M'])  # Default 5 Mbps
+        else:
+            # CPU encoding parameters
+            if not video_info:
+                # Default high-quality encoding
+                return [
+                    '-c:v', 'libx264',
+                    '-crf', '18',
+                    '-preset', 'medium',
+                    '-c:a', 'aac',
+                    '-b:a', '192k'
+                ]
             
-            params.extend(['-preset', 'medium'])
+            # Analyze source video
+            video_stream = None
+            for stream in video_info.get('streams', []):
+                if stream['codec_type'] == 'video' and not video_stream:
+                    video_stream = stream
             
-            # Preserve framerate
-            if 'r_frame_rate' in video_stream:
-                params.extend(['-r', video_stream['r_frame_rate']])
+            # Video encoding parameters
+            if video_stream:
+                params.extend(['-c:v', 'libx264'])
+                
+                # Quality based on source bitrate
+                if 'bit_rate' in video_stream:
+                    source_bitrate = int(video_stream['bit_rate'])
+                    if source_bitrate > 10_000_000:  # >10 Mbps
+                        params.extend(['-crf', '17'])
+                    elif source_bitrate > 5_000_000:  # >5 Mbps
+                        params.extend(['-crf', '18'])
+                    else:
+                        params.extend(['-crf', '20'])
+                else:
+                    params.extend(['-crf', '18'])  # Default high quality
+                
+                params.extend(['-preset', 'medium'])
+                
+                # Preserve framerate
+                if 'r_frame_rate' in video_stream:
+                    params.extend(['-r', video_stream['r_frame_rate']])
         
-        # Audio encoding parameters
+        # Audio encoding parameters (same for GPU and CPU)
+        audio_stream = None
+        if video_info:
+            for stream in video_info.get('streams', []):
+                if stream['codec_type'] == 'audio' and not audio_stream:
+                    audio_stream = stream
+        
         if audio_stream:
             # Try to copy audio if it's already AAC
             if audio_stream.get('codec_name') == 'aac':
@@ -223,6 +386,8 @@ class VideoProcessor:
                     params.extend(['-b:a', f'{audio_bitrate // 1000}k'])
                 else:
                     params.extend(['-b:a', '192k'])
+        else:
+            params.extend(['-c:a', 'aac', '-b:a', '192k'])
         
         return params
     

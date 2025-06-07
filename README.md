@@ -11,6 +11,7 @@
 - 📺 チャプターファイルから`--`で始まるセグメント（CM等）を自動除外
 - ⚡ ストリームコピーによる高速処理（再エンコードなし）
 - 🎯 キーフレームを考慮した正確なカット（--accurate/--reencodeオプション）
+- 🚀 GPUアクセラレーション対応（M1/M2/M3 Mac、NVIDIA、AMD、Intel）
 - 📝 編集後の動画用に調整されたチャプターファイルを自動生成
 - 📱 iOS互換性のための最適化
 - 🛠️ 詳細なエラーハンドリングとログ出力
@@ -95,6 +96,34 @@ video-chapter-trimmer chapters.txt input.mp4 --reencode
 
 # チャプターファイルを生成しない
 video-chapter-trimmer chapters.txt input.mp4 --no-chapters
+
+# GPUアクセラレーション（自動検出）
+video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu auto
+
+# M1/M2/M3 Mac用（VideoToolbox）
+video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu videotoolbox
+
+# NVIDIA GPU用
+video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu nvenc
+
+# Intel GPU用
+video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu qsv
+
+# AMD GPU用
+video-chapter-trimmer chapters.txt input.mp4 --reencode --gpu amf
+```
+
+### GPU アクセラレーション
+
+`--gpu`オプションでハードウェアエンコーディングを有効にできます：
+
+- **auto**: 利用可能なGPUエンコーダーを自動検出
+- **videotoolbox**: Apple Silicon Mac（M1/M2/M3）やIntel Mac
+- **nvenc**: NVIDIA GPU（GeForce、Quadro）
+- **qsv**: Intel Quick Sync Video
+- **amf**: AMD GPU
+
+GPUエンコーディングは`--accurate`または`--reencode`モードでのみ有効です。通常のストリームコピーモードでは使用されません。
 ```
 
 ### 処理モードの選択

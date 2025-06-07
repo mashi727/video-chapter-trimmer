@@ -31,7 +31,8 @@ class VideoChapterTrimmer:
             verbose=args.verbose, 
             dry_run=args.dry_run,
             accurate=args.accurate,
-            reencode=args.reencode
+            reencode=args.reencode,
+            gpu=args.gpu
         )
         self.chapter_writer = ChapterWriter()
         
@@ -234,6 +235,9 @@ Examples:
   %(prog)s chapters.txt video.mp4 -v --keep-temp
   %(prog)s chapters.txt video.mp4 --accurate  # More precise cuts
   %(prog)s chapters.txt video.mp4 --reencode  # Most accurate (slow)
+  %(prog)s chapters.txt video.mp4 --gpu auto  # Auto-detect GPU
+  %(prog)s chapters.txt video.mp4 --gpu videotoolbox  # macOS M1/M2/M3
+  %(prog)s chapters.txt video.mp4 --reencode --gpu nvenc  # NVIDIA GPU
 
 Chapter file format:
   0:00:05.151 Opening
@@ -286,6 +290,11 @@ Lines starting with '--' are excluded from the output.
     parser.add_argument('--no-chapters',
                        action='store_true',
                        help='Do not generate chapter file for edited video')
+    
+    # Hardware acceleration
+    parser.add_argument('--gpu',
+                       choices=['auto', 'videotoolbox', 'nvenc', 'qsv', 'amf'],
+                       help='Use GPU acceleration for encoding (auto-detect or specify)')
     
     # Version
     parser.add_argument('--version',
